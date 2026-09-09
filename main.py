@@ -10,29 +10,35 @@ from zoneinfo import ZoneInfo
 # --------------------------------------------------
 
 st.set_page_config(
-    page_title="어제의 박스오피스",
+    page_title="박스오피스 조회",
     page_icon="🎬",
     layout="wide"
 )
 
-st.title("어제의 박스오피스")
-st.caption("KOBIS 일일 박스오피스 · 한국 시간 기준")
+st.title("박스오피스 조회")
+st.caption("KOBIS 일일 박스오피스")
 
 
 # --------------------------------------------------
-# 어제 날짜 계산
+# 날짜 계산
 # --------------------------------------------------
 
-def get_yesterday():
-    """
-    서버의 시간대가 한국이 아닐 수 있으므로
-    한국 시간(Asia/Seoul)을 기준으로 어제 날짜를 계산한다.
-    """
-    korea_now = datetime.now(ZoneInfo("Asia/Seoul"))
-    yesterday = korea_now - timedelta(days=1)
+# 한국 시간을 기준으로 오늘 날짜를 구한다.
+korea_now = datetime.now(ZoneInfo("Asia/Seoul"))
 
-    # API에서 요구하는 날짜 형식: YYYYMMDD
-    return yesterday.strftime("%Y%m%d")
+# 오늘은 아직 집계 전이므로 어제까지만 선택할 수 있다.
+yesterday = (korea_now - timedelta(days=1)).date()
+
+# 달력에서 선택할 날짜
+selected_date = st.date_input(
+    "조회할 날짜를 선택하세요.",
+    value=yesterday,
+    min_value=datetime(2000, 1, 1).date(),
+    max_value=yesterday
+)
+
+# KOBIS API가 요구하는 YYYYMMDD 형식으로 변환
+target_date = selected_date.strftime("%Y%m%d")
 
 
 # --------------------------------------------------
@@ -42,14 +48,11 @@ def get_yesterday():
 @st.cache_data(ttl=3600)
 def get_boxoffice(target_date):
     """
-    KOBIS API에서 해당 날짜의 박스오피스 정보를 가져온다.
-
-    cache_data를 사용했기 때문에
-    같은 날짜를 다시 조회하면 약 1시간 동안
-    API를 다시 호출하지 않는다.
+    KOBIS API에서 선택한 날짜의 박스오피스 정보를 가져온다.
+    같은 날짜를 다시 조회하면 약 1시간 동안 저장된 결과를 사용한다.
     """
 
-    # 인증키는 Streamlit Secrets에서 가져온다.
+    # Streamlit Secrets에서 인증키를 가져온다.
     try:
         kobis_key = st.secrets["KOBIS_KEY"]
     except Exception:
@@ -57,8 +60,8 @@ def get_boxoffice(target_date):
             "success": False,
             "message": (
                 "KOBIS_KEY를 찾을 수 없습니다.\n\n"
-                "Streamlit Cloud의 앱 설정에서 Secrets에 "
-                "KOBIS_KEY를 등록했는지 확인하세요."
+                "Streamlit Cloud의 Settings → Secrets에서 "
+                "KOBIS_KEY가 등록되어 있는지 확인하세요."
             ),
             "data": None
         }
@@ -73,7 +76,7 @@ def get_boxoffice(target_date):
         "targetDt": target_date
     }
 
-    # API 요청 중 문제가 생기는 경우를 대비한다.
+    # API 요청
     try:
         response = requests.get(
             url,
@@ -81,6 +84,7 @@ def get_boxoffice(target_date):
             timeout=10
         )
         response.raise_for_status()
+
     except requests.exceptions.Timeout:
         return {
             "success": False,
@@ -90,6 +94,7 @@ def get_boxoffice(target_date):
             ),
             "data": None
         }
+
     except requests.exceptions.RequestException as e:
         return {
             "success": False,
@@ -100,7 +105,7 @@ def get_boxoffice(target_date):
             "data": None
         }
 
-    # JSON으로 변환한다.
+    # JSON 응답 읽기
     try:
         result = response.json()
     except ValueError:
@@ -113,10 +118,7 @@ def get_boxoffice(target_date):
             "data": None
         }
 
-    # ----------------------------------------------
-    # 인증키가 틀린 경우에도 HTTP 상태코드는 200일 수 있다.
-    # 따라서 faultInfo가 있는지 반드시 확인한다.
-    # ----------------------------------------------
+    # 인증키가 잘못된 경우 faultInfo가 들어온다.
     if "faultInfo" in result:
         fault = result["faultInfo"]
 
@@ -130,19 +132,19 @@ def get_boxoffice(target_date):
             "message": (
                 "KOBIS API에서 오류가 반환되었습니다.\n\n"
                 f"{fault_message}\n\n"
-                "KOBIS_KEY가 정확한지, Streamlit Secrets에 "
-                "올바르게 등록했는지 확인하세요."
+                "KOBIS_KEY가 정확한지, "
+                "Streamlit Secrets에 올바르게 등록했는지 확인하세요."
             ),
             "data": None
         }
 
-    # boxOfficeResult가 없는 경우
+    # 박스오피스 결과가 없는 경우
     if "boxOfficeResult" not in result:
         return {
             "success": False,
             "message": (
                 "박스오피스 결과를 찾을 수 없습니다.\n\n"
-                "KOBIS API 응답 내용을 확인하세요."
+                "KOBIS API 응답을 확인하세요."
             ),
             "data": None
         }
@@ -155,15 +157,11 @@ def get_boxoffice(target_date):
         []
     )
 
-    # 영화 목록이 비어 있는 경우
+    # 영화 목록이 비어 있으면 집계 전으로 안내한다.
     if not movie_list:
         return {
             "success": False,
-            "message": (
-                f"{target_date} 날짜의 영화 목록이 없습니다.\n\n"
-                "조회 날짜에 박스오피스 데이터가 존재하는지 "
-                "또는 KOBIS API 응답을 확인하세요."
-            ),
+            "message": "그날은 아직 집계 전입니다.",
             "data": None
         }
 
@@ -175,40 +173,36 @@ def get_boxoffice(target_date):
 
 
 # --------------------------------------------------
-# 데이터 불러오기
+# 데이터 가져오기
 # --------------------------------------------------
-
-target_date = get_yesterday()
 
 result = get_boxoffice(target_date)
 
 
 # --------------------------------------------------
-# API 오류가 발생한 경우
+# 오류 처리
 # --------------------------------------------------
 
 if not result["success"]:
-    st.error(result["message"])
+    st.warning(result["message"])
     st.stop()
 
 
 # --------------------------------------------------
-# 데이터를 표와 그래프에 사용할 수 있도록 정리
+# 데이터프레임 만들기
 # --------------------------------------------------
 
-movies = result["data"]
+df = pd.DataFrame(result["data"])
 
-df = pd.DataFrame(movies)
 
-# KOBIS에서는 숫자도 문자열로 보내므로
-# 실제 숫자 자료형으로 변환한다.
+# KOBIS에서는 숫자도 문자열로 보내므로 숫자로 변환한다.
 numeric_columns = [
     "rank",
+    "rankInten",
     "audiCnt",
     "audiAcc",
     "scrnCnt",
-    "showCnt",
-    "rankInten"
+    "showCnt"
 ]
 
 for column in numeric_columns:
@@ -218,7 +212,7 @@ for column in numeric_columns:
     ).fillna(0).astype(int)
 
 
-# 순위를 숫자 기준으로 정렬
+# 순위순으로 정렬
 df = df.sort_values("rank")
 
 
@@ -226,16 +220,13 @@ df = df.sort_values("rank")
 # 조회 날짜 표시
 # --------------------------------------------------
 
-display_date = datetime.strptime(
-    target_date,
-    "%Y%m%d"
-).strftime("%Y년 %m월 %d일")
+display_date = selected_date.strftime("%Y년 %m월 %d일")
 
 st.subheader(f"{display_date} 박스오피스")
 
 
 # --------------------------------------------------
-# 1위 영화 정보
+# 1위 영화
 # --------------------------------------------------
 
 first_movie = df.iloc[0]
@@ -264,10 +255,8 @@ with col3:
 
 
 # --------------------------------------------------
-# 전체 영화 목록 표
+# 표에 표시할 데이터 만들기
 # --------------------------------------------------
-
-st.markdown("### 전체 순위")
 
 table_df = df[
     [
@@ -276,21 +265,84 @@ table_df = df[
         "openDt",
         "audiCnt",
         "audiAcc",
-        "scrnCnt"
+        "scrnCnt",
+        "rankInten"
     ]
 ].copy()
 
-# 표에서 보기 좋은 한국어 이름으로 변경
+
+# 영화명 옆에 트로피 표시
+def add_trophy(row):
+    """
+    누적관객이 100만 명을 넘었으면
+    영화명 뒤에 트로피 이모지를 붙인다.
+    """
+    movie_name = str(row["movieNm"])
+
+    if row["audiAcc"] >= 1_000_000:
+        return movie_name + " 🏆"
+
+    return movie_name
+
+
+table_df["movieNm"] = table_df.apply(
+    add_trophy,
+    axis=1
+)
+
+
+# 순위 증감 표시
+def format_rank_change(value):
+    """
+    rankInten을 보고 순위 변화를 표시한다.
+
+    양수 = 순위 상승 → 빨간 위 화살표
+    음수 = 순위 하락 → 파란 아래 화살표
+    0 = 변동 없음
+    """
+
+    value = int(value)
+
+    if value > 0:
+        return f":red[↑ {value}]"
+
+    elif value < 0:
+        return f":blue[↓ {abs(value)}]"
+
+    else:
+        return "-"
+
+
+table_df["rankChange"] = table_df["rankInten"].apply(
+    format_rank_change
+)
+
+
+# 표에서 사용할 열 이름
+table_df = table_df[
+    [
+        "rank",
+        "movieNm",
+        "openDt",
+        "audiCnt",
+        "audiAcc",
+        "scrnCnt",
+        "rankChange"
+    ]
+]
+
 table_df.columns = [
     "순위",
     "영화명",
     "개봉일",
     "관객수",
     "누적관객",
-    "스크린수"
+    "스크린수",
+    "전일 대비"
 ]
 
-# 숫자를 천 단위 쉼표로 표시
+
+# 숫자를 보기 편하게 표시
 table_df["관객수"] = table_df["관객수"].map(
     lambda x: f"{x:,}"
 )
@@ -303,6 +355,20 @@ table_df["스크린수"] = table_df["스크린수"].map(
     lambda x: f"{x:,}"
 )
 
+
+# --------------------------------------------------
+# 박스오피스 표
+# --------------------------------------------------
+
+st.markdown("### 전체 순위")
+
+st.markdown(
+    """
+    **순위 변화:** :red[↑ 상승] · :blue[↓ 하락]  
+    **🏆 누적관객 100만 명 이상**
+    """
+)
+
 st.dataframe(
     table_df,
     use_container_width=True,
@@ -311,7 +377,7 @@ st.dataframe(
 
 
 # --------------------------------------------------
-# 관객수 상위 5편 그래프
+# 관객수 상위 5편 막대그래프
 # --------------------------------------------------
 
 st.markdown("### 관객수 상위 5편")
@@ -325,7 +391,6 @@ top5 = (
     .copy()
 )
 
-# 영화명을 인덱스로 설정해서 막대그래프로 표시
 chart_df = top5[
     ["movieNm", "audiCnt"]
 ].set_index("movieNm")
